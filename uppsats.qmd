@@ -1,0 +1,655 @@
+---
+title: "uppsats"
+format: html
+editor: visual
+---
+
+```{r}
+library(proxy) # cosine distance
+library(dplyr)
+library(tidyr)
+library(cluster) # silhouette score
+library(skmeans) # spherical k-means
+library(purrr) # chunk 12, automatiskt lägga till/ta bort kluster
+library(clusterSim) # DB
+library(fpc) # CH
+library(ggplot2) 
+
+data_allt <- read.csv("embeddings_allt.csv")
+```
+
+```{r}
+# plockar ut unika färdigheter
+data_unika <- data_allt %>% 
+  distinct(skill, .keep_all = TRUE)
+```
+
+```{r}
+data_hier <- data_unika
+data_km <- data_unika
+data_skm <- data_unika
+```
+
+```{r}
+# plockar ut endast embeddings
+data_emb <- data_unika[, 3:770]
+```
+
+**Klustring**
+
+Skapa dendrogram
+
+```{r}
+# skapar distansmatris
+dist_matrix_cosine <- dist(data_emb, method = "cosine")
+```
+
+```{r}
+# hierarkisk klustring med cosine similarity
+kluster_hier <- hclust(dist_matrix_cosine, method = "complete")
+plot(kluster_hier)
+```
+
+Val av k genom silhouette
+
+```{r}
+k_max_sil <- seq(from = 2, to = 1002, by = 10)
+
+# beräknar silhouette score för ett visst intervall av k
+sil_k_hier <- sapply(k_max_sil, function(k) {
+  cut <- cutree(kluster_hier, k = k)
+  sil <- silhouette(cut, dist_matrix_cosine)
+  mean(sil[, 3])
+})
+```
+
+```{r}
+ant_kluster_hier <- 132
+```
+
+```{r}
+klusterCut <- cutree(kluster_hier, k = ant_kluster_hier)
+```
+
+```{r}
+data_hier$kluster <- klusterCut
+```
+
+```{r}
+# kombinerar klustringen med frågorna
+data_kluster_hier <- data_allt %>%
+  left_join(
+    data_hier %>% dplyr::select(skill, kluster),
+    by = "skill"
+  )
+```
+
+```{r}
+# lägger till kolumner för varje kluster, obs får 1 om med i kluster 0 
+# annars
+data_kluster_hier <- data_kluster_hier %>%
+  mutate(
+    !!!set_names(
+      map(1:ant_kluster_hier,
+          ~ as.integer(data_kluster_hier$kluster == .x)),
+      paste0("cluster_", 1:ant_kluster_hier)
+    )
+  )
+```
+
+```{r}
+# tar bort de ointressant kolumnerna (embeddings)
+data_ratt_format_hier <- data_kluster_hier[, -c(2:771)]
+```
+
+```{r}
+# skapar en q-matris
+# grupperar så det endast är en fråga med (ej dubletter)
+# alla rader som tillhör en fråga slås ihop (tidigare en 1a per rad)
+qmatris_hier <- data_ratt_format_hier %>%
+  group_by(qid) %>%
+  summarise(
+    across(
+      paste0("cluster_", 1:ant_kluster_hier),
+      ~ max(.x),
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# tar fram de unika KCs i varje kluster
+skills_per_cluster_hier <- data_hier %>%
+  distinct(skill, kluster) %>% 
+  group_by(kluster) %>%
+  summarise(skills = list(skill))
+skills_per_cluster_hier$skills
+```
+
+K-means
+
+Val av k med silhouette
+
+```{r}
+data_matrix <- as.matrix(data_emb)
+```
+
+```{r}
+sil_k_km <- sapply(k_max_sil, function(k) {
+  km <- kmeans(data_matrix, centers = k, nstart = 20, 
+                       iter.max = 50)  
+  sil <- silhouette(km$cluster, dist_matrix)
+  mean(sil[, 3])
+})
+```
+
+```{r}
+dist_matrix <- dist(data_emb)
+```
+
+```{r}
+# seed för reproducerbarhet
+set.seed(123)
+ant_kluster_km <- 132
+
+kluster_km <- kmeans(x = data_emb, centers = ant_kluster_km, nstart = 20,
+                     iter.max = 50)
+data_km$kluster <- kluster_km$cluster
+```
+
+```{r}
+data_kluster_km <- data_allt %>%
+  left_join(
+    data_km %>% dplyr::select(skill, kluster),
+    by = "skill"
+  )
+```
+
+```{r}
+data_kluster_km <- data_kluster_km %>%
+  mutate(
+    !!!set_names(
+      map(1:ant_kluster_km, ~ as.integer(data_kluster_km$kluster == .x)),
+      paste0("cluster_", 1:ant_kluster_km)
+    )
+  )
+```
+
+```{r}
+data_ratt_format_km <- data_kluster_km[, -c(2:771)]
+```
+
+```{r}
+qmatris_km <- data_ratt_format_km %>%
+  group_by(qid) %>%
+  summarise(
+    across(
+      paste0("cluster_", 1:ant_kluster_km),
+      ~ max(.x),
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  )
+```
+
+```{r}
+skills_per_cluster_km <- data_km %>%
+  distinct(skill, kluster) %>% 
+  group_by(kluster) %>%
+  summarise(skills = list(skill))
+skills_per_cluster_km$skills
+```
+
+Spherical k-means
+
+Val av k genom silhouette
+
+```{r}
+sil_k_skm <- sapply(k_max_sil, function(k) {
+  skm <- skmeans(x = data_matrix, k = k,
+               method = "pclust", control = list(nruns = 20)) 
+  sil <- silhouette(skm$cluster, dist_matrix_cosine)
+  mean(sil[, 3])
+})
+```
+
+```{r}
+set.seed(123)
+ant_kluster_skm <- 132
+  
+kluster_skm <- skmeans(x = data_matrix, k = ant_kluster_skm,
+               method = "pclust", control = list(nruns = 20))
+data_skm$kluster <- kluster_skm$cluster
+```
+
+```{r}
+data_kluster_skm <- data_allt %>%
+  left_join(
+    data_skm %>% dplyr::select(skill, kluster),
+    by = "skill"
+  )
+```
+
+```{r}
+data_kluster_skm <- data_kluster_skm %>%
+  mutate(
+    !!!set_names(
+      map(1:ant_kluster_skm, ~ as.integer(data_kluster_skm$kluster == .x)),
+      paste0("cluster_", 1:ant_kluster_skm)
+    )
+  )
+```
+
+```{r}
+data_ratt_format_skm <- data_kluster_skm[, -c(2:771)]
+```
+
+```{r}
+qmatris_skm <- data_ratt_format_skm %>%
+  group_by(qid) %>%
+  summarise(
+    across(
+      paste0("cluster_", 1:ant_kluster_skm),
+      ~ max(.x),
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  )
+```
+
+```{r}
+skills_per_cluster_skm <- data_skm %>%
+  distinct(skill, kluster) %>% 
+  group_by(kluster) %>%
+  summarise(skills = list(skill))
+skills_per_cluster_skm$skills
+```
+
+**Mått, specifika värden**
+
+Silhouette score
+
+```{r}
+# k-means
+sil <- silhouette(kluster_km$cluster, dist_matrix_cosine)
+mean(sil[, 3])
+
+# hierarchical
+sil <- silhouette(klusterCut, dist_matrix_cosine)
+mean(sil[, 3])
+
+# spherical
+sil <- silhouette(kluster_skm$cluster, dist_matrix_cosine)
+mean(sil[, 3])
+```
+
+Davies-Bouldin
+
+```{r}
+# funktion från ChatGPT som beräknar DB för klustring gjord med
+# cosine similarity. Använder cosine distance ist för euclidean distance
+dbi <- function(dist_mat, clusters) {
+
+  dist_mat <- as.matrix(dist_mat)
+  clusters <- as.factor(clusters)
+  K <- length(levels(clusters))
+
+  # intra-cluster scatter (Si)
+  S <- numeric(K)
+
+  for (k in 1:K) {
+    idx <- which(clusters == levels(clusters)[k])
+
+    if (length(idx) == 1) {
+      S[k] <- 0
+    } else {
+      S[k] <- mean(dist_mat[idx, idx])
+    }
+  }
+
+  # inter-cluster centroid distance (approximated via medoids)
+  centroids_idx <- sapply(split(1:length(clusters), clusters), function(idx) {
+    idx[which.min(colMeans(as.matrix(dist_mat[idx, idx, drop = FALSE])))]
+  })
+
+  centroid_dist <- as.matrix(dist_mat)[centroids_idx, centroids_idx]
+
+  DBI_vals <- numeric(K)
+
+  for (i in 1:K) {
+    ratios <- numeric(K)
+
+    for (j in 1:K) {
+      if (i != j) {
+        ratios[j] <- (S[i] + S[j]) / centroid_dist[i, j]
+      }
+    }
+
+    DBI_vals[i] <- max(ratios, na.rm = TRUE)
+  }
+
+  mean(DBI_vals)
+}
+```
+
+```{r}
+# k-means
+dbi(dist_matrix_cosine, kluster_km$cluster)
+
+# hierarchical
+dbi(dist_matrix_cosine, klusterCut)
+
+# spherical
+dbi(dist_matrix_cosine, kluster_skm$cluster)
+```
+
+Calinski-Harabasz
+
+```{r}
+# k-means
+stats <- cluster.stats(dist_matrix, kluster_km$cluster)
+stats$ch
+
+# hierarchical
+stats2 <- cluster.stats(dist_matrix_cosine, klusterCut)
+stats2$ch
+
+# spherical 
+stats3 <- cluster.stats(dist_matrix_cosine, kluster_skm$cluster)
+stats3$ch
+```
+
+Restriktioner av q-matris
+
+```{r}
+# tar fram vilka kluster som används av en/flera frågor (beroende på gräns)
+grans <- 2
+ta_bort_fardighet_hier <- which(colSums(qmatris_hier[, -1]) <= grans)
+ta_bort_fardighet_km <- which(colSums(qmatris_km[, -1]) <= grans)
+ta_bort_fardighet_skm <- which(colSums(qmatris_skm[, -1]) <= grans)
+```
+
+```{r}
+# tar fram färdigheter som används av en/flera frågor, beroende på gräns
+skills_per_cluster_hier$skills[ta_bort_fardighet_hier]
+# om ta_bort_fardighet = 0, blir error när framtagning 
+#skills_per_cluster_km$skills[ta_bort_fardighet_km]
+skills_per_cluster_skm$skills[ta_bort_fardighet_skm]
+```
+
+```{r}
+# tar fram färdigheter som är ensamma i cluster
+vilka_fardigheter_hier <- which(sapply(skills_per_cluster_hier$skills, 
+                                  length) == 1)
+vilka_fardigheter_km <- which(sapply(skills_per_cluster_km$skills, 
+                                  length) == 1) 
+vilka_fardigheter_skm <- which(sapply(skills_per_cluster_skm$skills, 
+                                  length) == 1)
+```
+
+```{r}
+# tittar på vilka färdigheter som är ensamma och används av fler än en fråga
+anvandbar_fardighet_hier <- setdiff(vilka_fardigheter_hier,
+                                    ta_bort_fardighet_hier)
+anvandbar_fardighet_km <- setdiff(vilka_fardigheter_km,
+                                  ta_bort_fardighet_km)
+anvandbar_fardighet_skm <- setdiff(vilka_fardigheter_skm,
+                                   ta_bort_fardighet_skm)
+```
+
+```{r}
+# tar fram de färdigheter som är själva i ett kluster men som används
+# fler än en gång
+skills_per_cluster_hier$skills[anvandbar_fardighet_hier]
+skills_per_cluster_km$skills[anvandbar_fardighet_km]
+skills_per_cluster_skm$skills[anvandbar_fardighet_skm]
+```
+
+```{r}
+# ändra q-matriserna efter restriktioner
+qmatris_slutlig_hier <- qmatris_hier[, -(ta_bort_fardighet_hier + 1)]
+# återigen blir det tokigt om ta_bort_fardighet = 0
+qmatris_slutlig_km <- qmatris_km[, -(ta_bort_fardighet_km + 1)]
+# den slutgiltiga blir isf den kompletta
+qmatris_slutlig_km <- qmatris_km
+qmatris_slutlig_skm <- qmatris_skm[, -(ta_bort_fardighet_skm + 1)]
+```
+
+Deskriptiv statistik
+
+```{r}
+# genomsnittligt antal frågor som kopplas till ett kluster
+mean(colSums(qmatris_slutlig_hier[, -1]))
+mean(colSums(qmatris_slutlig_km[, -1]))
+mean(colSums(qmatris_slutlig_skm[, -1]))
+```
+
+```{r}
+# genomsnittlig antal kluster som kopplas till en fråga
+mean(rowSums(qmatris_slutlig_hier[, -1]))
+mean(rowSums(qmatris_slutlig_km[, -1]))
+mean(rowSums(qmatris_slutlig_skm[, -1]))
+```
+
+```{r}
+# antal KCs i ett kluster i snitt
+mean(sapply(skills_per_cluster_hier$skills[-ta_bort_fardighet_hier], 
+            length))
+# går er att ta bort när ta_bort_fardighet = 0
+#mean(sapply(skills_per_cluster_km$skills[-ta_bort_fardighet_km], length))
+mean(sapply(skills_per_cluster_km$skills, length))
+mean(sapply(skills_per_cluster_skm$skills[-ta_bort_fardighet_skm], length))
+```
+
+Q-matris demonstration
+
+```{r}
+# väljer ut vilka frågor (rader i Q-matriserna) vi använder oss av
+fragor <- c(3221, 3391, 941, 1755, 2311)
+```
+
+```{r}
+# väljer ut de specifika frågorna, tar bort de kolumner som summerar till # 0, dvs som ej används av Q-matrisen
+qmatris_demo_hier <- qmatris_slutlig_hier[fragor, ]
+ta_bort_hier <- which(colSums(qmatris_demo_hier) == 0)
+qmatris_demo_hier_slutlig <- qmatris_demo_hier[, -ta_bort_hier]
+```
+
+```{r}
+qmatris_demo_km <- qmatris_slutlig_km[fragor, ]
+ta_bort_km <- which(colSums(qmatris_demo_km) == 0)
+qmatris_demo_km_slutlig <- qmatris_demo_km[, -ta_bort_km]
+```
+
+```{r}
+qmatris_demo_skm <- qmatris_slutlig_skm[fragor, ]
+ta_bort_skm <- which(colSums(qmatris_demo_skm) == 0)
+qmatris_demo_skm_slutlig <- qmatris_demo_skm[, -ta_bort_skm]
+```
+
+Mer deskriptiv statistik
+
+```{r}
+# tittar på antalet unika rader i Q-matriserna
+nrow(unique(qmatris_slutlig_hier[, -1])) / nrow(qmatris_slutlig_hier)
+nrow(unique(qmatris_slutlig_km[, -1])) / nrow(qmatris_slutlig_km)
+nrow(unique(qmatris_slutlig_skm[, -1])) / nrow(qmatris_slutlig_skm)
+```
+
+```{r}
+# rangen av en Q-matris
+qr(qmatris_slutlig_hier[, -1])$rank
+qr(qmatris_slutlig_km[, -1])$rank
+qr(qmatris_slutlig_skm[, -1])$rank
+```
+
+```{r}
+# andel av frågorna som kopplas till ett kluster
+# experimentellt
+grans <- 0.2
+mappningsandel_hier <- colSums(qmatris_slutlig_hier[, -1]) / 
+  nrow(qmatris_slutlig_hier)
+sum(mappningsandel_hier > grans)
+```
+
+Resultatplottar
+
+Silhouette
+
+```{r}
+# inläsning av data till plottar, om man inte tidigare genererat den
+data_sil <- read.csv("data_sil")
+sil_k_hier <- data_sil[, 1]
+sil_k_km <- data_sil[, 2]
+sil_k_skm <- data_sil[, 3]
+```
+
+```{r}
+# fixar till data till plottarna
+sil_max_hier <- as.data.frame(cbind(k_max_sil, sil_k_hier))
+sil_max_km <- as.data.frame(cbind(k_max_sil, sil_k_km))
+sil_max_skm <- as.data.frame(cbind(k_max_sil, sil_k_skm))
+```
+
+```{r}
+ggplot() +
+  geom_line(data = sil_max_hier, 
+            aes(k_max_sil, sil_max_hier[, 2]), color = "green") +
+   geom_line(data = sil_max_km, 
+              aes(k_max_sil, sil_max_km[, 2]), color = "red") +
+   geom_line(data = sil_max_skm, 
+             aes(k_max_sil, sil_max_skm[, 2]), color = "blue") +
+    geom_point(data = sil_max_hier[which(sil_max_hier$k_max_sil == ant_kluster_hier), ], aes(k_max_sil, sil_k_hier), size = 3, shape = 21, 
+             fill = "green") +
+  geom_point(data = sil_max_km[which(sil_max_km$k_max_sil == ant_kluster_km), ], aes(k_max_sil, sil_k_km), size = 3, shape = 21, 
+             fill = "red") +
+  geom_point(data = sil_max_skm[which(sil_max_skm$k_max_sil == ant_kluster_skm), ], aes(k_max_sil, sil_k_skm), size = 3, shape = 21, 
+             fill = "blue") +
+  labs(x = "k", y = "Silhouette score") +
+  scale_x_continuous(breaks = c(seq(from = 0, to = 1100, by = 100))) +
+  scale_y_continuous(breaks = c(seq(from = 0, to = 0.3, by = 0.05))) +
+  theme_bw()
+```
+
+DB
+
+```{r}
+# data genereras för ett intervall av k
+db_gem_hier <- sapply(k_gem, function(k) {
+  cut <- cutree(kluster_hier, k = k)
+  db <- dbi(dist_matrix_cosine, cut)
+  db
+})
+
+db_gem_km <- sapply(k_gem, function(k) {
+  km <- kmeans(data_matrix, centers = k, nstart = 20, 
+                       iter.max = 50)
+  db_res <- index.DB(data_emb, km$cluster, 
+                       centrotypes = "centroids")
+  db <- db_res$DB
+  db
+})
+
+db_gem_skm <- sapply(k_gem, function(k) {
+ skm <- skmeans(x = data_matrix, k = k,
+               method = "pclust", control = list(nruns = 20)) 
+ db <- dbi(dist_matrix_cosine, skm$cluster)
+ db
+})
+```
+
+```{r}
+data_db <- read.csv("data_db")
+db_gem_hier <- data_db[, 1]
+db_gem_km <- data_db[, 2]
+db_gem_skm <- data_db[, 3]
+```
+
+```{r}
+db_hier <- as.data.frame(cbind(k_gem, db_gem_hier))
+db_km <- as.data.frame(cbind(k_gem, db_gem_km))
+db_skm <- as.data.frame(cbind(k_gem, db_gem_skm))
+```
+
+```{r}
+# plot med tre linjer för varje klustringsalgoritm
+# punkterna för de värden på k vi valt markeras på varje linje
+ggplot() +
+  geom_line(data = db_hier, 
+            aes(k_gem, db_gem_hier), color = "green") +
+   geom_line(data = db_km, 
+              aes(k_gem, db_gem_km), color = "red") +
+   geom_line(data = db_skm, 
+             aes(k_gem, db_gem_skm), color = "blue") + 
+  geom_point(data = db_hier[which(db_hier$k_gem == ant_kluster_hier), ], aes(k_gem, db_gem_hier), size = 3, shape = 21, 
+             fill = "green") +
+  geom_point(data = db_km[which(db_km$k_gem == ant_kluster_km), ], aes(k_gem, db_gem_km), size = 3, shape = 21, 
+             fill = "red") +
+  geom_point(data = db_skm[which(db_skm$k_gem == ant_kluster_skm), ], aes(k_gem, db_gem_skm), size = 3, shape = 21, 
+             fill = "blue") +
+  labs(x = "k", y = "Davies-Bouldin") +
+  ylim(0.5, 4) + 
+  xlim(0, 502) +
+  theme_bw()
+```
+
+CH
+
+```{r}
+ch_gem_hier <- sapply(k_gem, function(k) {
+  cut <- cutree(kluster_hier, k = k)
+  stats <- cluster.stats(dist_matrix_cosine, cut)
+  ch <- stats$ch
+  ch
+})
+
+ch_gem_km <- sapply(k_gem, function(k) {
+  km <- kmeans(data_matrix, centers = k, nstart = 20, 
+                       iter.max = 50)
+  stats <- cluster.stats(dist_matrix, km$cluster)
+  ch <- stats$ch
+  ch
+})
+
+ch_gem_skm <- sapply(k_gem, function(k) {
+  skm <- skmeans(x = data_matrix, k = k,
+               method = "pclust", control = list(nruns = 20)) 
+  stats <- cluster.stats(dist_matrix_cosine, skm$cluster)
+  ch <- stats$ch
+  ch
+})
+```
+
+```{r}
+data_ch <- read.csv("data_ch")
+ch_gem_hier <- data_ch[, 1]
+ch_gem_km <- data_ch[, 2]
+ch_gem_skm <- data_ch[, 3]
+```
+
+```{r}
+ch_hier <- as.data.frame(cbind(k_gem, ch_gem_hier))
+ch_km <- as.data.frame(cbind(k_gem, ch_gem_km))
+ch_skm <- as.data.frame(cbind(k_gem, ch_gem_skm))
+```
+
+```{r}
+ggplot() +
+  geom_line(data = ch_hier, 
+            aes(k_gem, ch_gem_hier), color = "green") +
+   geom_line(data = ch_km, 
+              aes(k_gem, ch_gem_km), color = "red") +
+   geom_line(data = ch_skm, 
+             aes(k_gem, ch_gem_skm), color = "blue") + 
+  geom_point(data = ch_hier[which(ch_hier$k_gem == ant_kluster_hier), ], aes(k_gem, ch_gem_hier), size = 4, shape = 21, 
+             fill = "green") +
+  geom_point(data = ch_km[which(ch_km$k_gem == ant_kluster_km), ], aes(k_gem, ch_gem_km), size = 3, shape = 21, 
+             fill = "red") +
+  geom_point(data = ch_skm[which(ch_skm$k_gem == ant_kluster_skm), ], aes(k_gem, ch_gem_skm), size = 3, shape = 21, 
+             fill = "blue") +
+  labs(x = "k", y = "Calinski-Harabasz") +
+  ylim(0, 200) + 
+  xlim(0, 502) +
+  theme_bw()
+```
